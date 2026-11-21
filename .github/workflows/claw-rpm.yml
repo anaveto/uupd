@@ -1,5 +1,8 @@
 name: claw rpm
 on:
+  push:
+    branches:
+      - ci/claw-rpm
   workflow_dispatch:
     inputs:
       ref:
@@ -14,7 +17,7 @@ jobs:
       - run: dnf install -y just git
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || 'main' }}
           fetch-depth: 0
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: UBLUE_ROOT="$PWD/output" just container-rpm-build
