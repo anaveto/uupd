@@ -1,0 +1,25 @@
+name: claw rpm
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        default: main
+jobs:
+  rpm:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:45
+    timeout-minutes: 30
+    steps:
+      - run: dnf install -y just git
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: UBLUE_ROOT="$PWD/output" just container-rpm-build
+      - run: rpm -qip output/x86_64/*.rpm && git log -1 --format='built from %H'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uupd-rpm
+          path: output/x86_64/*.rpm
