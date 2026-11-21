@@ -20,6 +20,7 @@ jobs:
           ref: ${{ inputs.ref || 'main' }}
           fetch-depth: 0
       - run: git config --system --add safe.directory '*' && git rev-parse --show-toplevel HEAD
+      - run: sed -i "s/^Release:\( *\)1%{?dist}/Release:\11.1.git$(git rev-parse --short=7 HEAD)%{?dist}/" uupd.spec && grep '^Release' uupd.spec
       - run: UBLUE_ROOT="$PWD/output" just container-rpm-build
       - run: rpm -qip output/x86_64/*.rpm && git log -1 --format='built from %H'
       - uses: actions/upload-artifact@v4
