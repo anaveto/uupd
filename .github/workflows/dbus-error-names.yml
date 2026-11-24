@@ -1,0 +1,78 @@
+name: dbus error names
+on:
+  push:
+    branches:
+      - ci/dbus-error-names
+jobs:
+  dbus-broker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go build -o /tmp/dbuserr ./ci/dbuserr
+      - run: |
+          cat > /tmp/Containerfile <<'C'
+          FROM registry.fedoraproject.org/fedora:45
+          RUN dnf install -y systemd dbus-broker polkit procps-ng && systemctl enable dbus-broker.service
+          CMD ["/sbin/init"]
+          C
+          sudo podman build -t f45 -f /tmp/Containerfile /tmp
+          sudo podman run -d --name f --privileged --systemd=always -v /tmp/dbuserr:/usr/local/bin/dbuserr:z f45
+          sleep 8
+          sudo podman exec f systemctl is-system-running || true
+          sudo podman exec f busctl --system list | grep -i 'PowerProfiles' || echo "PowerProfiles not listed"
+          sudo podman exec f sh -c 'ps -e | grep -E "dbus"; rpm -q systemd dbus-broker'
+      - run: sudo podman exec f dbuserr A-no-provider
+      - run: |
+          sudo podman exec f dnf install -y tuned-ppd
+          sudo podman exec f sh -c 'rpm -q tuned-ppd; ls /usr/share/dbus-1/system-services | grep -i -E "power|ppd"; systemctl cat tuned-ppd.service'
+          sudo podman exec f systemctl mask tuned-ppd.service
+          sudo podman exec f busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig
+          sudo podman exec f dbuserr B-masked
+          sudo podman exec f dbuserr B-masked-again
+      - run: |
+          sudo podman exec f systemctl unmask tuned-ppd.service
+          sudo podman exec f sh -c 'mkdir -p /etc/systemd/system/tuned-ppd.service.d; printf "[Service]\nExecStart=\nExecStart=/bin/false\nRestart=no\n" > /etc/systemd/system/tuned-ppd.service.d/x.conf; systemctl daemon-reload'
+          sudo podman exec f dbuserr C-unit-fails
+      - run: |
+          sudo podman exec f sh -c 'printf "[Service]\nExecStart=\nExecStart=/bin/sleep infinity\nType=dbus\nBusName=org.freedesktop.UPower.PowerProfiles\nTimeoutStartSec=5\nRestart=no\n" > /etc/systemd/system/tuned-ppd.service.d/x.conf; systemctl daemon-reload; systemctl reset-failed tuned-ppd.service'
+          sudo podman exec f dbuserr D-start-timeout
+      - run: |
+          sudo podman exec f sh -c 'rm /etc/systemd/system/tuned-ppd.service.d/x.conf; systemctl daemon-reload; systemctl reset-failed tuned-ppd.service; systemctl stop tuned-ppd.service'
+          sudo podman exec f sh -c 'printf "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n<busconfig><policy context=\"mandatory\"><deny send_destination=\"org.freedesktop.UPower.PowerProfiles\"/></policy></busconfig>\n" > /etc/dbus-1/system.d/zz-deny.conf'
+          sudo podman exec f busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig
+          sudo podman exec f systemctl start tuned-ppd.service || true
+          sudo podman exec f dbuserr E-policy-deny
+          sudo podman exec f rm /etc/dbus-1/system.d/zz-deny.conf
+          sudo podman exec f busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig
+      - run: |
+          sudo podman exec f systemctl start tuned-ppd.service || true
+          sudo podman exec f systemctl is-active tuned-ppd.service || true
+          sudo podman exec f dbuserr F-running
+          sudo podman exec f dbuserr G-running-unknown-property NoSuchProperty
+      - if: always()
+        run: sudo podman exec f journalctl -b --no-pager -u tuned-ppd -u dbus-broker | tail -60
+  dbus-daemon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go build -o /tmp/dbuserr ./ci/dbuserr && ps -e | grep dbus-daemon
+      - run: /tmp/dbuserr A-no-provider
+      - run: |
+          sudo apt-get install -y power-profiles-daemon
+          sudo systemctl stop power-profiles-daemon
+          sudo systemctl mask power-profiles-daemon
+          /tmp/dbuserr B-masked
+      - run: |
+          sudo systemctl unmask power-profiles-daemon
+          sudo mkdir -p /etc/systemd/system/power-profiles-daemon.service.d
+          printf '[Service]\nExecStart=\nExecStart=/bin/false\nRestart=no\n' | sudo tee /etc/systemd/system/power-profiles-daemon.service.d/x.conf
+          sudo systemctl daemon-reload
+          /tmp/dbuserr C-unit-fails
