@@ -1,0 +1,85 @@
+name: battery check
+on:
+  push:
+    branches:
+      - ci/dbus-error-names
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/battery-check-service-missing
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          test -z "$(gofmt -l checks)" && echo "GOFMT clean"
+          go vet ./... && go test ./checks/ -run Battery -v
+      - run: |
+          cp checks/hardware.go /tmp/h.go
+          t() { if go test ./checks/ -run Battery > /tmp/o 2>&1; then echo "MUTANT $1: SURVIVED"; else echo "MUTANT $1: killed by $(grep -o -- '--- FAIL: [A-Za-z]*' /tmp/o | sort -u | tr '\n' ' ')"; fi; cp /tmp/h.go checks/hardware.go; }
+          sed -i 's/if serviceMissing(err) {/if err != nil {/' checks/hardware.go; t any-error-passes
+          sed -i 's/if serviceMissing(err) {/if false {/' checks/hardware.go; t no-error-passes
+          for n in DBus.Error.ServiceUnknown DBus.Error.NameHasNoOwner systemd1.UnitMasked; do
+            sed -i "s/org.freedesktop.$n\"/org.freedesktop.x$n\"/" checks/hardware.go; t "without-$n"; done
+          sed -i 's/profile == "power-saver"/profile == "x"/' checks/hardware.go; t power-saver-ignored
+  hwcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/battery-check-service-missing
+          path: fix
+      - uses: actions/checkout@v4
+        with:
+          repository: ublue-os/uupd
+          ref: 85f1895
+          path: base
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fix/go.mod
+      - run: |
+          for d in base fix; do (cd $d && git rev-parse HEAD && CGO_ENABLED=0 go build -o /tmp/uupd-$d .); done
+          cp ci/ci/upower-stub.py /tmp/upower-stub.py
+          cat > /tmp/Containerfile <<'C'
+          FROM registry.fedoraproject.org/fedora:45
+          RUN dnf install -y systemd dbus-broker polkit python3-gobject && systemctl enable dbus-broker.service
+          RUN printf '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n<busconfig><policy user="root"><allow own="org.freedesktop.UPower"/></policy><policy context="default"><allow send_destination="org.freedesktop.UPower"/></policy></busconfig>\n' > /etc/dbus-1/system.d/upower-stub.conf
+          CMD ["/sbin/init"]
+          C
+          sudo podman build -q -t f45 -f /tmp/Containerfile /tmp
+          sudo podman run -d --name f --privileged --systemd=always -v /tmp/uupd-base:/usr/local/bin/uupd-base:z -v /tmp/uupd-fix:/usr/local/bin/uupd-fix:z -v /tmp/upower-stub.py:/root/upower-stub.py:z f45
+          sleep 8
+          sudo podman exec f systemd-run --unit=stub python3 -I /root/upower-stub.py
+          sleep 2
+          sudo podman exec f busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower OnBattery
+          cat > /tmp/c.sh <<'S'
+          for v in base fix; do
+            out=$(sudo podman exec f timeout 120 uupd-$v hw-check 2>&1 | tr '\n' ' ')
+            if echo "$out" | grep -q 'Battery, returned error'; then r="BATTERY FAILS"; else r="battery passes"; fi
+            echo "CASE $1 $v: $r | ${out:0:300}"
+          done
+          S
+      - run: bash /tmp/c.sh no-provider
+      - run: |
+          sudo podman exec f dnf install -y -q tuned-ppd
+          sudo podman exec f systemctl mask tuned-ppd.service
+          sudo podman exec f busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig
+          bash /tmp/c.sh masked
+      - run: |
+          sudo podman exec f systemctl unmask tuned-ppd.service
+          sudo podman exec f systemctl start tuned-ppd.service
+          bash /tmp/c.sh running-balanced
+          sudo podman exec f busctl set-property org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles org.freedesktop.UPower.PowerProfiles ActiveProfile s power-saver || true
+          sudo podman exec f busctl get-property org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles org.freedesktop.UPower.PowerProfiles ActiveProfile
+          bash /tmp/c.sh running-power-saver
+      - run: |
+          sudo podman exec f sh -c 'printf "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n<busconfig><policy context=\"mandatory\"><deny send_destination=\"org.freedesktop.UPower.PowerProfiles\"/></policy></busconfig>\n" > /etc/dbus-1/system.d/zz-deny.conf'
+          sudo podman exec f busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig
+          bash /tmp/c.sh access-denied
