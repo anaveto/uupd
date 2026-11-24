@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ublue-os/uupd
-          ref: 85f1895
+          ref: 85f18951a2a8a8dbabf35d8fb157d7106813302e
           path: base
       - uses: actions/setup-go@v5
         with:
