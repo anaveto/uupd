@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/battery-check-service-missing
+          ref: ci/battery-check-split
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -34,7 +34,7 @@ jobs:
           path: ci
       - uses: actions/checkout@v4
         with:
-          ref: fix/battery-check-service-missing
+          ref: ci/battery-check-split
           path: fix
       - uses: actions/checkout@v4
         with:
