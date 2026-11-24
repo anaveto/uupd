@@ -132,6 +132,14 @@ func Update(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	releaseSuspendInhibit, err := session.InhibitSuspend()
+	if releaseSuspendInhibit != nil {
+		defer releaseSuspendInhibit()
+	}
+	if err != nil {
+		slog.Warn("Failed to inhibit suspend during update", slog.Any("error", err))
+	}
+
 	hwCheck := conf.Checks.Hardware.Enable
 	dryRun, err := cmd.Flags().GetBool("dry-run")
 	if err != nil {
@@ -155,6 +163,11 @@ func Update(cmd *cobra.Command, args []string) error {
 	force, err := cmd.Flags().GetBool("force")
 	if err != nil {
 		slog.Error("Failed to get force flag", "error", err)
+		return err
+	}
+	ciFlag, err := cmd.Flags().GetBool("ci")
+	if err != nil {
+		slog.Error("Failed to get ci flag", "error", err)
 		return err
 	}
 
@@ -190,8 +203,8 @@ func Update(cmd *cobra.Command, args []string) error {
 	}
 
 	initConfiguration := drv.UpdaterInitConfiguration{}.New()
-	_, exists := os.LookupEnv("CI")
-	initConfiguration.Ci = exists
+	_, ciEnv := os.LookupEnv("CI")
+	initConfiguration.Ci = ciFlag || ciEnv
 	initConfiguration.DryRun = dryRun
 	initConfiguration.Verbose = verboseRun
 
@@ -200,14 +213,14 @@ func Update(cmd *cobra.Command, args []string) error {
 		brewUpdater.Config.Enabled = false
 		slog.Debug("Brew driver failed to initialize", slog.Any("error", err))
 	}
-	brewUpdater.Config.Enabled = !disableModuleBrew
+	brewUpdater.Config.Enabled = brewUpdater.Config.Enabled && !disableModuleBrew
 
 	flatpakUpdater, err := flatpak.FlatpakUpdater{}.New(*initConfiguration)
 	if err != nil {
 		flatpakUpdater.Config.Enabled = false
 		slog.Debug("Flatpak driver failed to initialize", slog.Any("error", err))
 	}
-	flatpakUpdater.Config.Enabled = !disableModuleFlatpak
+	flatpakUpdater.Config.Enabled = flatpakUpdater.Config.Enabled && !disableModuleFlatpak
 	flatpakUpdater.SetUsers(users)
 
 	distroboxUpdater, err := distrobox.DistroboxUpdater{}.New(*initConfiguration)
@@ -215,7 +228,7 @@ func Update(cmd *cobra.Command, args []string) error {
 		distroboxUpdater.Config.Enabled = false
 		slog.Debug("Distrobox driver failed to initialize", slog.Any("error", err))
 	}
-	distroboxUpdater.Config.Enabled = !disableModuleDistrobox
+	distroboxUpdater.Config.Enabled = distroboxUpdater.Config.Enabled && !disableModuleDistrobox
 	distroboxUpdater.SetUsers(users)
 
 	firmwareUpdater, err := firmware.FirmwareUpdater{}.New(*initConfiguration)
