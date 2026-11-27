@@ -22,6 +22,18 @@ func TestInhibitTypesCoverSleepAndLidSwitch(t *testing.T) {
 	}
 }
 
+func TestInhibitTypesSkipSleepInGameMode(t *testing.T) {
+	got := inhibitTypesFor("gamescope")
+	if len(got) != 1 || got[0] != "handle-lid-switch" {
+		t.Fatalf("game mode inhibit types = %v, want [handle-lid-switch]", got)
+	}
+	for _, desktop := range []string{"", "KDE", "GNOME"} {
+		if got := inhibitTypesFor(desktop); len(got) != len(inhibitTypes) {
+			t.Fatalf("inhibit types for %q = %v, want %v", desktop, got, inhibitTypes)
+		}
+	}
+}
+
 func TestReleaseInhibitorsClosesDescriptors(t *testing.T) {
 	var first [2]int
 	var second [2]int
